@@ -40,15 +40,26 @@ class IOStream(object):
         self._read_callback = None
         self._read_max_bytes = None
         self.event = self.io_loop.READ
+        self._close = False
 
     def _close_fd(self):
+        """
+            close fd
+        """
         self.socket.close()
 
     def close(self, exc_info=None):
-        pass
+        """
+            close一个fd的时候，首先需要close fd, 其次还需要从ioloop hander里面移掉
+            对应的fd
+        """
+        if not self.closed():
+            self.io_loop.remove_hander(self.socket.fileno())
+            self._close_fd()
+            self._close = True
 
     def closed(self):
-        return False
+        return self._close
 
     def _read_from_socket(self):
         try:
@@ -92,7 +103,7 @@ class IOStream(object):
             则调用_read_to_buffer_loop，从fd data里面获取，直到找到数据的position并
             返回
         """
-        pos = self._find_pos_buffer()
+        pos = self._find_read_pos()
         if pos is not None:
             return self._read_from_buffer(pos)
 
@@ -113,25 +124,129 @@ class IOStream(object):
 
     def _read_to_buffer_loop(self, target_size=0):
         """
-            循环把fd data里面的数据读取到buffer中，直到读取到相应的大小
+            循环把fd data里面的数据读取到buffer中，直到读取到相应的大小,并返回对应的pos
         """
         if self._read_bytes is not None:
             target_size = self._read_bytes
         elif self._read_max_bytes is not None:
             target_size = self._read_max_bytes
+        next_find_pos = 0
         while self.closed():
             # Read from the socket until we get EWOULDBLOCK
             if self._read_to_buffer() == 0:
                 break
             if self._read_buffer_size > target_size:
                 break
+            if self._read_buffer_size >= next_find_pos:
+                pos = self._find_read_pos()
+                if pos is not None:
+                    return pos
+                next_find_pos = self._read_buffer_size * 2
+            return self._find_read_pos()
 
-    def _read_from_buffer(self):
-        pass
+    def _read_from_buffer(self, pos):
+        """
+            一旦找到了读取数据的pos,就说明了已经可以找到了相应的数据，那必须重置之前设置
+            的标志，并执行read_callback回调函数
+        """
+        self._read_bytes = self._read_delimiter = None
+        self._run_read_callback(pos)
+
+    def _find_read_pos(self):
+        # 如果是调用read_bytes, 则_read_bytes不为空
+        if self._read_bytes:
+            if self._read_buffer_size >= self._read_bytes:
+                return self._read_bytes
+        # 如果是调用read_until, 则_read_delimiter不为空, 这里需要注意的是
+        # delimiter是多字符，例如'\r\n', 那么有可能这两个字符会跨chunk，一个chunk的size
+        # 是4M， 一般在chunk[0]即可找到相关的数据，如果在第一个chunk没有找到，我们需要
+        # 合并chunk, 直到找到相应的数据 chunk[0] = data，
+        # 获取数据self._read_buffer.popleft()
+        if self._read_delimiter and self._read_buffer:
+            while True:
+                loc = self._read_buffer[0].find(self._read_delimiter)
+                if loc != -1:
+                    delimiter_len = len(self._read_delimiter)
+                    return loc + delimiter_len
+                if len(self._read_buffer) == 1:
+                    break
+            self._double_prefix(self._read_buffer)
+        return None
 
     def _add_io_stats(self, events):
         pass
 
+    def _handle_events(self, fd, events):
+        if self.closed():
+            logging.warning("Got events for closed stream %s", fd)
+            return
+        try:
+            if self.closed():
+                return
+            if events & self.io_loop.READ:
+                self._handle_read()
+            if self.closed():
+                return
+            if events & self.io_loop.WRITE:
+                self._handle_write()
+            if self.closed():
+                return
+            if events & self.io_loop.ERROR:
+                self.error = self.get_fd_error()
+                # We may have queued up a user callback in _handle_read or
+                # _handle_write, so don't close the IOStream until those
+                # callbacks have had a chance to run.
+                self.io_loop.add_callback(self.close)
+                return
+        except Exception:
+            logging.error("Uncaught exception, closing connection.")
+            self.close()
+            raise
+
     def read(self):
         self._read_to_buffer()
-        print self._read_buffer
+        print self._read_buffeur
+
+
+def _double_prefix(deque):
+    new_len = max(len(deque[0]) * 2,
+                  (len(deque[0]) + len(deque[1])))
+    _merge_prefix(deque, new_len)
+
+
+def _merge_prefix(deque, size):
+    """Replace the first entries in a deque of strings with a single
+    string of up to size bytes.
+
+    >>> d = collections.deque(['abc', 'de', 'fghi', 'j'])
+    >>> _merge_prefix(d, 5); print(d)
+    deque(['abcde', 'fghi', 'j'])
+
+    Strings will be split as necessary to reach the desired size.
+    >>> _merge_prefix(d, 7); print(d)
+    deque(['abcdefg', 'hi', 'j'])
+
+    >>> _merge_prefix(d, 3); print(d)
+    deque(['abc', 'defg', 'hi', 'j'])
+
+    >>> _merge_prefix(d, 100); print(d)
+    deque(['abcdefghij'])
+    """
+    if len(deque) == 1 and len(deque[0]) <= size:
+        return
+    prefix = []
+    remaining = size
+    while deque and remaining > 0:
+        chunk = deque.popleft()
+        if len(chunk) > remaining:
+            deque.appendleft(chunk[remaining:])
+            chunk = chunk[:remaining]
+        prefix.append(chunk)
+        remaining -= len(chunk)
+    # This data structure normally just contains byte strings, but
+    # the unittest gets messy if it doesn't use the default str() type,
+    # so do the merge based on the type of data that's actually present.
+    if prefix:
+        deque.appendleft(type(prefix[0])().join(prefix))
+    if not deque:
+        deque.appendleft(b"")

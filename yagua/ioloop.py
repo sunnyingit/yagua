@@ -31,6 +31,14 @@ class IOLoop(object):
         self._impl.register(fd, events)
         self._handlers[fd] = handler
 
+    def remove_hander(self, fd):
+        self._handlers.pop(fd)
+        self._sockets.pop(fd)
+        try:
+            self._impl.unregister(fd)
+        except:
+            logging.error('remove hander fd error')
+
     def start(self):
         if self._stopped:
             self._stopped = False
@@ -74,6 +82,11 @@ class _Select(object):
             self.write_fds.add(fd)
         if events == IOLoop.ERROR:
             self.error_fds.add(fd)
+
+    def unregister(self, fd):
+        self.read_fds.discard(fd)
+        self.write_fds.discard(fd)
+        self.error_fds.discard(fd)
 
     def poll(self, timeout=0):
         # select把socket变成非阻塞，但是select本身是阻塞的，timeout就是其阻塞的时间
