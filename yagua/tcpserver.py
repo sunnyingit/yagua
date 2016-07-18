@@ -31,8 +31,10 @@ def open_listenfd(port, address=None):
     flags |= fcntl.FD_CLOEXEC
     fcntl.fcntl(listenfd.fileno(), fcntl.F_SETFD, flags)
 
+    # 设置listenfd套接字为非阻塞模式
     listenfd.setblocking(0)
     listenfd.bind((address, port))
+    # 128是可监听套接字队列的size
     listenfd.listen(128)
     print 'Serving HTTP on port %s ...' % port
     return listenfd
@@ -51,7 +53,7 @@ def start(func, num_processes=1):
 
 
 def handle_listenfd(listenfd, events):
-    # 多个连接同时到达，服务器的TCP就绪队列瞬间积累多个就绪连接，如果是边缘触发模式，
+    # 监听套接字的队列里面可能同时又多个连接已经可读了，服务器的TCP就绪队列瞬间积累多个就绪连接，如果是边缘触发模式，
     # epoll只会通知一次，accept只处理一个连接，只有等到下次有连接过来的时候触发，这样会
     # 导致TCP就绪队列中剩下的连接都得不到处理，解决方法是使用While, 处理完TCP就绪队列
     # 中的所有连接后再退出循环，原则就是，在ET模式下，Select/Epoll触发一次，我们需要处理读完fd的所有数据
@@ -59,16 +61,14 @@ def handle_listenfd(listenfd, events):
     while True:
         try:
             connection, address = listenfd.accept()
-            logging.info('accept connection fileno is %r', connection.fileno())
         except socket.error, e:
             # 在非阻塞模式下，调用accept(阻塞操作)， 如果此时监听套接字队列里面还没有已经
             # 完成的套接字，将返回Resource temporarily unavailable，代号为11(EAGAIN)
+            # 直接返回，跳出loop
             if e.args[0] in (errno.EWOULDBLOCK, errno.EAGAIN):
                 return
-        # print connection.recv(100)
         # 把connection交给iostream处理
-        iofd = iostream.IOStream(connection)
-        iofd.read()
+        iostream.IOStream(connection)
 
 
 def connnect(socket):

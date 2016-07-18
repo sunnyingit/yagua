@@ -23,7 +23,6 @@ class IOStream(object):
         通过调用read_until, read_size 注册__read_callback回调函数，读取的数据
         作为回调函数的参数，通过回调函数解析读取的数据
     """
-
     def __init__(self, socket, io_loop=None, max_buffer_size=104857600,
                  read_chunk_size=4096):
         self.socket = socket
@@ -72,12 +71,18 @@ class IOStream(object):
                 raise
         # If no messages are available to be received and the peer has performed  # noqa
         # an orderly shutdown, the value 0 is returned
+        # 需要注意的是 当一个fd被select|epoll 返回回来说明fd已经准备好可以读了，如果此时
+        # 读到的数据是0，说明对端发起了FIN，所以需要调用close关闭本次socket
         if not chunk:
             self.socket.close()
             return None
         return chunk
 
     def _read_to_buffer(self):
+        """
+            从socket里面读取数据到read_buffer中
+            使用while True的原因是一次读完socket缓冲区里面的所有的数据，直到遇到
+        """
         while True:
             try:
                 chunk = self._read_from_socket()
@@ -86,6 +91,7 @@ class IOStream(object):
                 # 使用While的原因是忽略中断信号,知道读取到数据为止
                 if errno_from_exception(e) == errno.EINTR:
                     continue
+
                 self.close(exc_info=True)
             break
         if chunk is None:

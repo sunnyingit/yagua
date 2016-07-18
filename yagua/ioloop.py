@@ -6,6 +6,10 @@ import errno
 
 
 class IOLoop(object):
+    """
+        Ioloop是一个事件驱动器，首先在Ioloop中给fd注册对应函数，
+        当select|epoll事件准备好后返回对应的fds，遍历fds并执行对应的函数
+    """
     READ = 0x001
     WRITE = 0x004
     ERROR = 0x008 | 0x010 | 0x2000
@@ -64,7 +68,7 @@ class IOLoop(object):
                     self._handlers[fd](self._sockets[fd], events)
                 except (OSError, IOError), e:
                     logging.error(
-                        "Exception in I/O handler for fd %d", fd, exc_info=True) # noqa
+                        "Exception in I/O handler for fd %d", fd, exc_info=True)  # noqa
         self._stopped = False
 
 
