@@ -25,11 +25,13 @@ def _cpu_count():
 def open_listenfd(port, address=None):
     port = 3000 if port <= 0 else port
     listenfd = socket.socket(socket.AF_INET, socket.SOCK_STREAM, 0)
+    # 主动调用close的一方会处于time_wait的状态，是是为了保证全双工的完全终止
+    # 避免数据混乱， time_wait的时间是MSL的2倍，这样这个时间段的所有的数据都被丢弃了
+    # 可配置 /proc/sys/net/ipv4/tcp_tw_reuse or tcp_tw_recycle
     listenfd.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     flags = fcntl.fcntl(listenfd.fileno(), fcntl.F_GETFD)
     flags |= fcntl.FD_CLOEXEC
     fcntl.fcntl(listenfd.fileno(), fcntl.F_SETFD, flags)
-
     # 设置listenfd套接字为非阻塞模式, 默认套接字是阻塞的, 阻塞之后进程会挂起（ps aux | grep base.py）
     # 当有新的连接到达时，程序被唤起
     listenfd.setblocking(0)
