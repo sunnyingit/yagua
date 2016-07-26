@@ -5,7 +5,6 @@ import errno
 import fcntl
 import multiprocessing
 import os
-import logging
 
 from yagua import iostream
 
@@ -31,7 +30,8 @@ def open_listenfd(port, address=None):
     flags |= fcntl.FD_CLOEXEC
     fcntl.fcntl(listenfd.fileno(), fcntl.F_SETFD, flags)
 
-    # 设置listenfd套接字为非阻塞模式
+    # 设置listenfd套接字为非阻塞模式, 默认套接字是阻塞的, 阻塞之后进程会挂起（ps aux | grep base.py）
+    # 当有新的连接到达时，程序被唤起
     listenfd.setblocking(0)
     listenfd.bind((address, port))
     # 128是可监听套接字队列的size
@@ -52,12 +52,7 @@ def start(func, num_processes=1):
         os.waitpid(-1, 0)
 
 
-def handle_listenfd(listenfd, events):
-    # 监听套接字的队列里面可能同时又多个连接已经可读了，服务器的TCP就绪队列瞬间积累多个就绪连接，如果是边缘触发模式，
-    # epoll只会通知一次，accept只处理一个连接，只有等到下次有连接过来的时候触发，这样会
-    # 导致TCP就绪队列中剩下的连接都得不到处理，解决方法是使用While, 处理完TCP就绪队列
-    # 中的所有连接后再退出循环，原则就是，在ET模式下，Select/Epoll触发一次，我们需要处理读完fd的所有数据
-    # 如果fd是可读的，那就读完所有的数据，如果是可写的，那就一次性写完所有的数
+def accept(listenfd):
     while True:
         try:
             connection, address = listenfd.accept()
@@ -66,9 +61,20 @@ def handle_listenfd(listenfd, events):
             # 完成的套接字，将返回Resource temporarily unavailable，代号为11(EAGAIN)
             # 直接返回，跳出loop
             if e.args[0] in (errno.EWOULDBLOCK, errno.EAGAIN):
-                return
-        # 把connection交给iostream处理
-        iostream.IOStream(connection)
+                continue
+            raise e
+        return connection
+
+
+def handle_listenfd(listenfd, events):
+    # 监听套接字的队列里面可能同时又多个连接已经可读了，服务器的TCP就绪队列瞬间积累多个就绪连接，如果是边缘触发模式，
+    # epoll只会通知一次，accept只处理一个连接，只有等到下次有连接过来的时候触发，这样会
+    # 导致TCP就绪队列中剩下的连接都得不到处理，解决方法是使用While, 处理完TCP就绪队列
+    # 中的所有连接后再退出循环，原则就是，在ET模式下，Select/Epoll触发一次，我们需要处理读完fd的所有数据
+    # 如果fd是可读的，那就读完所有的数据，如果是可写的，那就一次性写完所有的数
+    connection = accept(listenfd)
+    # 把connection交给iostream处理
+    iostream.IOStream(connection)
 
 
 def connnect(socket):
