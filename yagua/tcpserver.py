@@ -36,7 +36,8 @@ def open_listenfd(port, address=None):
     # 当有新的连接到达时，程序被唤起
     listenfd.setblocking(0)
     listenfd.bind((address, port))
-    # 128是可监听套接字队列的size
+    # 128是可监听套接字队列的size, 如果队列是满的，当client的SYN过来的时候，serve会忽略
+    # 这个SYN，以期望client继续发送SYN直到队列里面有可用的空间
     listenfd.listen(128)
     print 'Serving HTTP on port %s ...' % port
     return listenfd
@@ -55,6 +56,8 @@ def start(func, num_processes=1):
 
 
 def accept(listenfd):
+    # 在三次握手之后数据已经开始传输，而不是在调用accept才开始传输数据。
+    # 最大的数据量为已连接的套接字的接受缓冲区的大小，如果缓冲区满了则。。。。
     while True:
         try:
             connection, address = listenfd.accept()
