@@ -1,16 +1,14 @@
 # -*- conding: utf-8 -*-
 
 import socket
+import time
 
 HOST, PORT = 'localhost', 8888
 
-for i in range(10):
-    connect_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    fd = connect_socket.connect((HOST, PORT))
-    message = "hello world" * 100
-    connect_socket.send(message)
+connect_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+connect_socket.connect((HOST, PORT))
 
-    # while True:
-    #     data = connect_socket.recv(5)
-    #     time.sleep(1)
-    # connect_socket.close()
+while True:
+    message = "hello world"
+    connect_socket.send(message)
+    time.sleep(4)

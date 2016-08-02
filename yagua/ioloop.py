@@ -50,10 +50,10 @@ class IOLoop(object):
         self._running = True
         while True:
             try:
+                # 返回准备好的fd和注册好的事件
                 events_pairs = self._impl.poll(self.poll_timeout)
-                if events_pairs:
-                    print events_pairs
             except Exception, e:
+                # fd的触发事件给了select，但是select 本身是阻塞的，所以需要忽略EINTR错误
                 if (getattr(e, 'errno', None) == errno.EINTR or
                     (isinstance(getattr(e, 'args', None), tuple) and
                      len(e.args) == 2 and e.args[0] == errno.EINTR)):
@@ -80,12 +80,13 @@ class _Select(object):
         self.error_fds = set()
 
     def register(self, fd, events):
-        if events == IOLoop.READ:
+        if events & IOLoop.READ:
             self.read_fds.add(fd)
-        if events == IOLoop.WRITE:
+        if events & IOLoop.WRITE:
             self.write_fds.add(fd)
-        if events == IOLoop.ERROR:
+        if events & IOLoop.ERROR:
             self.error_fds.add(fd)
+            self.read_fds.add(fd)
 
     def unregister(self, fd):
         self.read_fds.discard(fd)
@@ -93,9 +94,12 @@ class _Select(object):
         self.error_fds.discard(fd)
 
     def poll(self, timeout=0):
-        # select把socket变成非阻塞，但是select本身是阻塞的，timeout就是其阻塞的时间
+        # select把socket变成"非阻塞"，但是select本身是阻塞的，timeout就是其阻塞的时间
+        # 0表示不阻塞，不传表示阻塞
+        print "read set is %r" % str(self.read_fds)
+
         readable, writeable, errors = select.select(
-            self.read_fds, self.write_fds, self.error_fds, timeout)
+            self.read_fds, self.write_fds, self.error_fds)
 
         events = {}
         for fd in readable:
@@ -107,4 +111,4 @@ class _Select(object):
         return events.items()
 
 
-IOloop = IOLoop()
+IOloop = IOLoop.instance()

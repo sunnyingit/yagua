@@ -23,7 +23,6 @@ def _cpu_count():
 
 
 def open_listenfd(port, address=None):
-    port = 3000 if port <= 0 else port
     listenfd = socket.socket(socket.AF_INET, socket.SOCK_STREAM, 0)
     # 主动调用close的一方会处于time_wait的状态，是是为了保证全双工的完全终止
     # 避免数据混乱， time_wait的时间是MSL的2倍，这样这个时间段的所有的数据都被丢弃了
@@ -56,19 +55,7 @@ def start(func, num_processes=1):
 
 
 def accept(listenfd):
-    # 在三次握手之后数据已经开始传输，而不是在调用accept才开始传输数据。
-    # 最大的数据量为已连接的套接字的接受缓冲区的大小，如果缓冲区满了则。。。。
-    while True:
-        try:
-            connection, address = listenfd.accept()
-        except socket.error, e:
-            # 在非阻塞模式下，调用accept(阻塞操作)， 如果此时监听套接字队列里面还没有已经
-            # 完成的套接字，将返回Resource temporarily unavailable，代号为11(EAGAIN)
-            # 直接返回，跳出loop
-            if e.args[0] in (errno.EWOULDBLOCK, errno.EAGAIN):
-                continue
-            raise e
-        return connection
+    pass
 
 
 def handle_listenfd(listenfd, events):
@@ -77,9 +64,27 @@ def handle_listenfd(listenfd, events):
     # 导致TCP就绪队列中剩下的连接都得不到处理，解决方法是使用While, 处理完TCP就绪队列
     # 中的所有连接后再退出循环，原则就是，在ET模式下，Select/Epoll触发一次，我们需要处理读完fd的所有数据
     # 如果fd是可读的，那就读完所有的数据，如果是可写的，那就一次性写完所有的数
-    connection = accept(listenfd)
-    # 把connection交给iostream处理
-    iostream.IOStream(connection)
+    while True:
+        # 在三次握手之后数据已经开始传输，而不是在调用accept才开始传输数据。
+        # 最大的数据量为已连接的套接字的接受缓冲区的大小
+        try:
+            connection, address = listenfd.accept()
+        except socket.error, e:
+            # 在非阻塞模式下，调用accept(阻塞操作)， 如果此时监听套接字队列里面还没有已经
+            # 完成的套接字，将返回Resource temporarily unavailable，代号为11(EAGAIN)
+            # 直接返回，跳出loop
+            if e.args[0] in (errno.EWOULDBLOCK, errno.EAGAIN):
+                # 注意这里终止了while，监听套接字队列没有准备好的套接字，直接返回
+                return
+            raise e
+        connection.setblocking(1)
+        # 1, 同时有多个fd经过三次握手，可准备好读了[1, 2, 3, 4], 把fd交给iostream处理
+        # 2, 当数据准备好读的时候，ioloop直接触发对应的回调函数处理已经准备好的数据
+        # 3, 在程序中也可以手动调用iostream的函数去获取数据，不必依赖ioloop的回调函数
+        # 4, 需要注意的一点是fd为什么是数字
+        io = iostream.IOStream(connection)
+        # print io.read_from_socket()
+        io.read_bytes(100)
 
 
 def connnect(socket):

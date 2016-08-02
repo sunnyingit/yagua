@@ -3,6 +3,8 @@ import collections
 import socket
 import errno
 import logging
+import os
+
 
 from yagua import ioloop
 from yagua.helper import errno_from_exception
@@ -13,7 +15,7 @@ _ERRNO_WOULDBLOCK = (errno.EWOULDBLOCK, errno.EAGAIN)
 class IOStream(object):
     """
         每个accept fd都会有一个IOStream对象, 当可读事件发生的时候，IOStream对象会不停地
-        从 fd data里面每次读取read_chunk_size的数据到read_buffer中，加入了buffer之后
+        从 fd data里面每次读取read_chunk_size的数00到read_buffer中，加入了buffer之后
         可以避免每次都向fd data里面读取数据
 
         向buffer读取数据的api:
@@ -23,8 +25,9 @@ class IOStream(object):
         通过调用read_until, read_size 注册__read_callback回调函数，读取的数据
         作为回调函数的参数，通过回调函数解析读取的数据
     """
+
     def __init__(self, socket, io_loop=None, max_buffer_size=104857600,
-                 read_chunk_size=4096):
+                 read_chunk_size=100):
         self.socket = socket
         #  设置已连接的socket为非阻塞模式
         self.socket.setblocking(False)
@@ -40,12 +43,13 @@ class IOStream(object):
         self._read_max_bytes = None
         self.event = self.io_loop.READ
         self._close = False
+        self._state = None
 
     def _close_fd(self):
-        """
-            close fd
-        """
         self.socket.close()
+
+    def fileno(self):
+        return self.socket
 
     def close(self, exc_info=None):
         """
@@ -60,17 +64,15 @@ class IOStream(object):
     def closed(self):
         return self._close
 
-    def _read_from_socket(self):
+    def read_from_socket(self):
         try:
             # 在非阻塞的模式下，如果client发送的数据还没有到服务器，此时reve返回-1，错误代号为EAGAIN
             chunk = self.socket.recv(self.read_chunk_size)
-        except socket.error, e:
+        except socket.error as e:
             if errno_from_exception(e) in _ERRNO_WOULDBLOCK:
                 return None
             else:
                 raise
-        # If no messages are available to be received and the peer has performed  # noqa
-        # an orderly shutdown, the value 0 is returned
         # 需要注意的是 当一个fd被select|epoll 返回回来说明fd已经准备好可以读了，如果此时
         # 读到的数据是0，说明对端发起了FIN，所以需要调用close关闭本次socket
         if not chunk:
@@ -78,15 +80,14 @@ class IOStream(object):
             return None
         return chunk
 
-    def _read_to_buffer(self):
+    def read_to_buffer(self):
         """
             从socket里面读取数据到read_buffer中
-            使用while True的原因是一次读完socket缓冲区里面的所有的数据，直到遇到
         """
         while True:
             try:
-                chunk = self._read_from_socket()
-            except Exception, e:
+                chunk = self.read_from_socket()
+            except Exception as e:
                 # 发送信号可导致recv中断，此时返回EINTER
                 # 使用While的原因是忽略中断信号,知道读取到数据为止
                 if errno_from_exception(e) == errno.EINTR:
@@ -97,38 +98,43 @@ class IOStream(object):
         if chunk is None:
             return 0
         self._read_buffer.append(chunk)
+
+        print "read total data:", str(self._read_buffer)
         self._read_buffer_size += len(chunk)
         if self._read_buffer_size > self.max_buffer_size:
             logging.error("Reached maximum read buffer size")
             self.close()
+
         return len(chunk)
 
-    def _try_inline_read(self):
+    def try_inline_read(self):
         """
             从_read_buffer里面读取target_size的数据, 如果buffer里面没有需要的数据，
-            则调用_read_to_buffer_loop，从fd data里面获取，直到找到数据的position并
+            则调用read_to_buffer_loop，从fd data里面获取，直到找到数据的position并
             返回
         """
-        pos = self._find_read_pos()
+        pos = self.find_read_pos()
+        # 如果找到了position，则直接从buffer里面获取数据
         if pos is not None:
-            return self._read_from_buffer(pos)
+            return self.read_from_buffer(pos)
 
-        # 如果buffer里面没有数据，则从fd data里面读取
+        # 如果buffer里面没有数据，则把socket里面的数据读取到buffer中
         try:
-            pos = self._read_to_buffer_loop()
+            pos = self.read_to_buffer_loop()
         except Exception:
-            # run close callbacks
             pass
+        # 在从buffer中获取数据
         if pos is not None:
-            return self._read_from_buffer(pos)
-        # 如果socket是close状态,run close callbacks
+            return self.read_from_buffer(pos)
+        # 如果还是没有任何数据过来，则检测socket是不是被关闭了
         if self.closed():
             pass
         else:
-            # 如果fd data里面还没有数据，说明client还没有发送任何数据过来
+            # 如果fd data里面还没有数据，说明client还没有发送任何数据过来,
+            # 则给这个socket注册一个可读的事件
             self._add_io_stats(ioloop.IOLoop.READ)
 
-    def _read_to_buffer_loop(self, target_size=0):
+    def read_to_buffer_loop(self, target_size=0):
         """
             循环把fd data里面的数据读取到buffer中，直到读取到相应的大小,并返回对应的pos
         """
@@ -136,29 +142,40 @@ class IOStream(object):
             target_size = self._read_bytes
         elif self._read_max_bytes is not None:
             target_size = self._read_max_bytes
-        next_find_pos = 0
-        while self.closed():
-            # Read from the socket until we get EWOULDBLOCK
-            if self._read_to_buffer() == 0:
+        while not self.closed():
+            # 读取数据直到遇到EWOULDBLOCK
+            if self.read_to_buffer() == 0:
                 break
             if self._read_buffer_size > target_size:
                 break
-            if self._read_buffer_size >= next_find_pos:
-                pos = self._find_read_pos()
-                if pos is not None:
-                    return pos
-                next_find_pos = self._read_buffer_size * 2
-            return self._find_read_pos()
+            return self.find_read_pos()
 
-    def _read_from_buffer(self, pos):
+    def read_bytes(self, num_bytes):
+
+        self._read_bytes = num_bytes
+        try:
+            self.try_inline_read()
+        except:
+            raise
+
+    def _consume(self, loc):
+        if loc == 0:
+            return b""
+        _merge_prefix(self._read_buffer, loc)
+        self._read_buffer_size -= loc
+        return self._read_buffer.popleft()
+
+    def read_from_buffer(self, pos):
         """
             一旦找到了读取数据的pos,就说明了已经可以找到了相应的数据，那必须重置之前设置
             的标志，并执行read_callback回调函数
         """
         self._read_bytes = self._read_delimiter = None
-        self._run_read_callback(pos)
+        # 消费对应的数据
+        data = self._consume(pos)
+        print "proceing the request data is:" + data
 
-    def _find_read_pos(self):
+    def find_read_pos(self):
         # 如果是调用read_bytes, 则_read_bytes不为空
         if self._read_bytes:
             if self._read_buffer_size >= self._read_bytes:
@@ -179,18 +196,33 @@ class IOStream(object):
             self._double_prefix(self._read_buffer)
         return None
 
-    def _add_io_stats(self, events):
-        pass
-
-    def _handle_events(self, fd, events):
+    def _add_io_stats(self, state):
+        """
+            添加(IOLoop.{READ,WRITE} flags)事件，读和写有两种策略“快和慢”
+            快：直接读取数据
+            慢：通过ioloop进行调度进行“读取”，如果数据准备好了直接往read_buffer里面写数据
+            首先直接读取，如果发现数据还没有准备好，则把事件注册到select\epoll中
+        """
         if self.closed():
-            logging.warning("Got events for closed stream %s", fd)
+            # 如果connection是关闭的，不需要做任何处理
+            return
+        if self._state is None:
+            # 默认为所有的fd添加了ERROR事件，注意是与运算，可以为一个fd注册多个事件
+            self._state = ioloop.IOLoop.ERROR | state
+
+            self.io_loop.add_handler(
+                self.fileno(), self.handle_events, self._state)
+        elif not self._state & state:
+            self._state = self._state | state
+            self.io_loop.update_handler(self.fileno(), self._state)
+
+    def handle_events(self, fd, events):
+        if self.closed():
             return
         try:
-            if self.closed():
-                return
             if events & self.io_loop.READ:
                 self._handle_read()
+            # read的过程中，可能会close connnection 所以每次都必须检查
             if self.closed():
                 return
             if events & self.io_loop.WRITE:
@@ -199,19 +231,33 @@ class IOStream(object):
                 return
             if events & self.io_loop.ERROR:
                 self.error = self.get_fd_error()
-                # We may have queued up a user callback in _handle_read or
-                # _handle_write, so don't close the IOStream until those
-                # callbacks have had a chance to run.
-                self.io_loop.add_callback(self.close)
                 return
         except Exception:
             logging.error("Uncaught exception, closing connection.")
             self.close()
             raise
 
+    def _handle_read(self):
+        """
+            当select触发可读事件，直接往read_buffer里面写数据, 直到读取到响应的数据
+        """
+        try:
+            pos = self.read_to_buffer_loop()
+        except Exception:
+            self.close(exc_info=True)
+            return
+        # 如果数据准备好了，则直接处理这个数据
+        if pos is not None:
+            self.read_from_buffer(pos)
+            return
+
+    def get_fd_error(self):
+        errno = self.socket.getsockopt(socket.SOL_SOCKET,
+                                       socket.SO_ERROR)
+        return socket.error(errno, os.strerror(errno))
+
     def read(self):
-        self._read_to_buffer()
-        print self._read_buffeur
+        self.read_to_buffer()
 
 
 def _double_prefix(deque):
