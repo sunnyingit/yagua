@@ -24,9 +24,14 @@ def blockting_socket():
             # man recv: If no messages are available at the socket,
             # the receive call waits for amessage to arrive, unless the socket
             # is nonblocking, orderly shutdown, the value 0 is returned
-            data = connection.recv(100)
-            print 'blocking time is: %r' % str(int(time.time() - now))
+            data = connection.recv(13)
+            # client已经发关闭了socket
+            if len(data) == 0:
+                connection.close()
+                break
+            print 'recv blocking time is: %r' % str(int(time.time() - now))
             print "request data is:" + data
+            connection.sendall(data)
 
 
 def noblockting_socket():
@@ -75,6 +80,8 @@ def time_wait_socket():
     while True:
         connection, address = serversocket.accept()
         while True:
+            # 客户端和服务器端的数据的发送和recv这些函数没有关系，recv只是从
+            # 已经缓冲区里面读取数据而已
             data = connection.recv(1)
             if len(data) == 1:
                 # 当服务器主动调用close 会触发四次握手，server的状态会经过
@@ -84,4 +91,4 @@ def time_wait_socket():
             print "request data is:" + data
 
 if __name__ == '__main__':
-    time_wait_socket()
+    blockting_socket()

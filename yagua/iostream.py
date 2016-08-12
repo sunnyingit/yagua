@@ -30,7 +30,7 @@ class IOStream(object):
                  read_chunk_size=100):
         self.socket = socket
         #  设置已连接的socket为非阻塞模式
-        self.socket.setblocking(False)
+        self.socket.setblocking(0)
         self.io_loop = io_loop or ioloop.IOLoop.instance()
         self.max_buffer_size = max_buffer_size
         self.read_chunk_size = read_chunk_size
@@ -209,9 +209,9 @@ class IOStream(object):
         if self._state is None:
             # 默认为所有的fd添加了ERROR事件，注意是与运算，可以为一个fd注册多个事件
             self._state = ioloop.IOLoop.ERROR | state
-
             self.io_loop.add_handler(
                 self.fileno(), self.handle_events, self._state)
+        # 如果这个事件和之前添加的事件不同，则更新这个socket的事件
         elif not self._state & state:
             self._state = self._state | state
             self.io_loop.update_handler(self.fileno(), self._state)
@@ -226,7 +226,8 @@ class IOStream(object):
             if self.closed():
                 return
             if events & self.io_loop.WRITE:
-                self._handle_write()
+                pass
+                # self._handle_write()
             if self.closed():
                 return
             if events & self.io_loop.ERROR:
@@ -239,7 +240,7 @@ class IOStream(object):
 
     def _handle_read(self):
         """
-            当select触发可读事件，直接往read_buffer里面写数据, 直到读取到响应的数据
+            当select触发可读事件，直接往read_buffer里面写数据, 注意只是往buffer里面写数据而已
         """
         try:
             pos = self.read_to_buffer_loop()

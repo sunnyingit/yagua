@@ -25,11 +25,13 @@ class IOLoop(object):
 
     @classmethod
     def instance(cls):
+        # 使用静态方法的目的主要是为了保证只有一个loop的instance
         if not hasattr(cls, '_instance'):
             cls._instance = cls()
         return cls._instance
 
     def add_handler(self, socket, handler, events):
+        # 加入到select都是fileno(), 这个特别注意一下
         fd = socket.fileno()
         self._sockets[fd] = socket
         self._impl.register(fd, events)
@@ -53,7 +55,8 @@ class IOLoop(object):
                 # 返回准备好的fd和注册好的事件
                 events_pairs = self._impl.poll(self.poll_timeout)
             except Exception, e:
-                # fd的触发事件给了select，但是select 本身是阻塞的，所以需要忽略EINTR错误
+                # fd的触发事件给了select，但是select 本身是阻塞的
+                # 忽略EINTR错误, 信号产生时会中断其调用
                 if (getattr(e, 'errno', None) == errno.EINTR or
                     (isinstance(getattr(e, 'args', None), tuple) and
                      len(e.args) == 2 and e.args[0] == errno.EINTR)):
@@ -95,7 +98,8 @@ class _Select(object):
 
     def poll(self, timeout=0):
         # select把socket变成"非阻塞"，但是select本身是阻塞的，timeout就是其阻塞的时间
-        # 0表示不阻塞，不传表示阻塞
+        # 0表示不阻塞，相当于轮询，不传表示阻塞
+        # selelct 超时之后直接返回空的集合
         print "read set is %r" % str(self.read_fds)
 
         readable, writeable, errors = select.select(

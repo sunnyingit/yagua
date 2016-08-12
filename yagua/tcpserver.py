@@ -54,10 +54,6 @@ def start(func, num_processes=1):
         os.waitpid(-1, 0)
 
 
-def accept(listenfd):
-    pass
-
-
 def handle_listenfd(listenfd, events):
     # 监听套接字的队列里面可能同时又多个连接已经可读了，服务器的TCP就绪队列瞬间积累多个就绪连接，如果是边缘触发模式，
     # epoll只会通知一次，accept只处理一个连接，只有等到下次有连接过来的时候触发，这样会
@@ -77,15 +73,12 @@ def handle_listenfd(listenfd, events):
                 # 注意这里终止了while，监听套接字队列没有准备好的套接字，直接返回
                 return
             raise e
-        connection.setblocking(1)
+        connection.setblocking(0)
         # 1, 同时有多个fd经过三次握手，可准备好读了[1, 2, 3, 4], 把fd交给iostream处理
         # 2, 当数据准备好读的时候，ioloop直接触发对应的回调函数处理已经准备好的数据
         # 3, 在程序中也可以手动调用iostream的函数去获取数据，不必依赖ioloop的回调函数
         # 4, 需要注意的一点是fd为什么是数字
         io = iostream.IOStream(connection)
+
         # print io.read_from_socket()
-        io.read_bytes(100)
-
-
-def connnect(socket):
-    pass
+        print io.read_bytes(100)
